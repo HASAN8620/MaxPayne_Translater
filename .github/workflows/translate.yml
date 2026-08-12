@@ -3,6 +3,10 @@ name: Max Payne Cloud Translation
 on:
   workflow_dispatch: # Isse manual play button active hoga
 
+# 👇 Yeh block add kiya hai taake bot ko file save karne ki ijazat mil jaye (403 Error Fix)
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,6 +27,13 @@ jobs:
         GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
       run: python -u translate.py
 
+    # 👇 Yeh naya step hai. Yeh Git push hone se pehle aapki file ka backup GitHub par upload kar dega.
+    - name: Backup Translated File
+      uses: actions/upload-artifact@v4
+      with:
+        name: Translated-Roman-Urdu-File
+        path: american_roman.oxt
+
     - name: Commit and Save Roman Urdu File
       run: |
         git config --global user.name "GitHub Actions"
@@ -30,3 +41,5 @@ jobs:
         git add american_roman.oxt
         git commit -m "SUCCESS: Packaged New Subtitles" || exit 0
         git push
+        
+  
