@@ -21,7 +21,7 @@ jobs:
     - name: Execute Silent Cloud Translation
       env:
         GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-      run: python translate.py
+      run: python -u translate.py
 
     - name: Commit and Save Roman Urdu File
       run: |
