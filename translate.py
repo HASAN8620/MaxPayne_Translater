@@ -4,22 +4,25 @@ import json
 import time
 import requests
 
-# 1. API Key Loading
-API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+# 1. 9 Gemini API Keys Loading
+KEYS_ENV = os.environ.get("GEMINI_API_KEYS", "")
+API_KEYS = [k.strip() for k in KEYS_ENV.split(",") if k.strip()]
 
-if not API_KEY:
-    print("❌ Error: GEMINI_API_KEY Secret nahi mila. GitHub Settings check karein.")
+if not API_KEYS:
+    print("❌ Error: GEMINI_API_KEYS Secret nahi mila.")
     exit(1)
 
-print("✅ Gemini API Key loaded successfully!")
+print(f"✅ Total {len(API_KEYS)} Gemini API Keys loaded successfully! Rocket speed unlocked 🚀")
 
 input_file = "american.oxt"
 output_file = "american_roman.oxt"
 checkpoint_file = "translation_checkpoint.json"
-batch_size = 15  # Optimized batch size for Gemini
+batch_size = 20  # Wapas 20 ki speed par aagaye!
 MODEL_NAME = "gemini-1.5-flash"
 
-# 2. Ultra-Strict System Prompt for Gemini
+curr_key_idx = 0
+
+# 2. Strict Prompt for Natural Pakistani Urdu
 SYSTEM_PROMPT = """You are a native Pakistani video game localization expert for Max Payne 3.
 Translate English game dialogues into NATURAL, FLUENT, and DRAMATIC Pakistani Roman Urdu (WhatsApp style).
 
@@ -67,30 +70,23 @@ def clean_hindi_words(text):
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     return text
 
-# 4. Gemini Translation Function
+# 4. Gemini Translation Function (With Fast Key Rotation)
 def translate_batch(batch_dict):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
+    global curr_key_idx
     
     prompt = f"Translate the following JSON values to natural Pakistani Roman Urdu. Return a JSON object with the same keys:\n{json.dumps(batch_dict, ensure_ascii=False)}"
     
     payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": SYSTEM_PROMPT},
-                    {"text": prompt}
-                ]
-            }
-        ],
-        "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.2
-        }
+        "contents": [{"parts": [{"text": SYSTEM_PROMPT}, {"text": prompt}]}],
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.2}
     }
-    
     headers = {"Content-Type": "application/json"}
     
-    for attempt in range(5):
+    max_attempts = len(API_KEYS) * 2 
+    
+    for attempt in range(max_attempts):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEYS[curr_key_idx]}"
+        
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=60)
             
@@ -107,18 +103,21 @@ def translate_batch(batch_dict):
                     print(f"\n⚠️ Format Error. Retrying...", end="", flush=True)
                     
             elif response.status_code == 429:
-                print(f"\n⚠️ Rate Limit (Gemini API)! 10 seconds wait kar rahe hain...", end="", flush=True)
-                time.sleep(10)
+                print(f"\n⚠️ Key #{curr_key_idx + 1} Limit Hit. Switching to next key...", end="", flush=True)
+                curr_key_idx = (curr_key_idx + 1) % len(API_KEYS)
+                time.sleep(1)
                 continue
+                
             else:
                 print(f"\n⚠️ ERROR {response.status_code}: {response.text[:100]}", flush=True)
                 
         except Exception as e:
             print(f"\n⚠️ Connection Error: {str(e)[:50]}...", end="", flush=True)
             
-        time.sleep(5)
+        curr_key_idx = (curr_key_idx + 1) % len(API_KEYS)
+        time.sleep(2)
         
-    print("\n❌ Errors limit reached.")
+    print("\n❌ Saari keys thak gayin. Process pause kar rahe hain.")
     exit(1)
 
 # 5. Main Processing Logic
@@ -155,8 +154,7 @@ if os.path.exists(input_file):
                         json.dump(saved_data, cf, ensure_ascii=False, indent=2)
                     print("✅ [Batch Saved Successfully]", flush=True)
                 pending_batch = {}
-                # Safe Delay for Gemini Free Rate Limit (15 RPM)
-                time.sleep(4.5)
+                time.sleep(1.0) # Speed is back! Sirf 1 sec ka delay.
 
     if pending_batch:
         res = translate_batch(pending_batch)
