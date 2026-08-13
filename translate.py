@@ -18,7 +18,7 @@ input_file = "american.oxt"
 output_file = "american_roman.oxt"
 checkpoint_file = "translation_checkpoint.json"
 batch_size = 20  # Wapas 20 ki speed par aagaye!
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = "gemini-1.5-flash-latest"
 
 curr_key_idx = 0
 
