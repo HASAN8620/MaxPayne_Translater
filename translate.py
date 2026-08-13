@@ -1,114 +1,183 @@
-from google import genai
-import time
 import os
+import re
+import json
+import time
+import requests
 
-# GitHub Secrets se keys retrieve karna
-keys_env = os.environ.get("GEMINI_API_KEYS", "")
-API_KEYS = [k.strip() for k in keys_env.split(",") if k.strip()]
+# 1. API Key Loading
+API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+
+if not API_KEY:
+    print("❌ Error: GEMINI_API_KEY Secret nahi mila. GitHub Settings check karein.")
+    exit(1)
+
+print("✅ Gemini API Key loaded successfully!")
 
 input_file = "american.oxt"
 output_file = "american_roman.oxt"
-batch_size = 20
-current_key_index = 0
+checkpoint_file = "translation_checkpoint.json"
+batch_size = 15  # Optimized batch size for Gemini
+MODEL_NAME = "gemini-1.5-flash"
 
-def get_gemini_client():
-    global current_key_index
-    return genai.Client(api_key=API_KEYS[current_key_index])
+# 2. Ultra-Strict System Prompt for Gemini
+SYSTEM_PROMPT = """You are a native Pakistani video game localization expert for Max Payne 3.
+Translate English game dialogues into NATURAL, FLUENT, and DRAMATIC Pakistani Roman Urdu (WhatsApp style).
 
-def switch_key():
-    global current_key_index
-    old_index = current_key_index
-    current_key_index = (current_key_index + 1) % len(API_KEYS)
-    print(f"\n🔄 [KEY SWITCH] Limit reached on Key {old_index + 1}. Switching to Key {current_key_index + 1}...", flush=True)
-    time.sleep(5)
+STRICT OUTPUT FORMAT:
+You MUST respond with ONLY a valid JSON object matching the exact input keys. Do not add markdown formatting or conversational filler.
 
-def translate_batch_gemini(batch_keys, batch_texts, batch_num, total_batches):
-    # Strict prompt to force direct conversational Roman Urdu lines match
-    prompt = (
-        "You are an expert game translator. Translate the English text of the following lines into natural, conversational, "
-        "and very easy WhatsApp-style Roman Urdu (Latin script) that a common gamer can read (e.g., 'Main yahan fasa hua hoon').\n\n"
-        "STRICT RULES:\n"
-        "1. Translate ONLY the spoken text. Do NOT add any hex keys, equal signs (=), or notes.\n"
-        "2. Do NOT remove or modify the game formatting symbols (~z~ or ~w~). They must remain exactly at the start of each translated line.\n"
-        "3. Output exactly the same number of lines as provided. Maintain the exact line-by-line order.\n"
-        "4. Output ONLY the translated text lines. Do not add any introductory text, markdown formatting, or code blocks (like ```).\n\n"
-        "Lines to translate:\n" + "\n".join(batch_texts)
-    )
+TRANSLATION & VOCABULARY RULES:
+1. Translate into natural spoken Pakistani dialogue tone (NO LITERAL WORD-FOR-WORD TRANSLATION).
+2. STRICTLY FORBIDDEN HINDI WORDS:
+   - NEVER use 'shareer' -> use 'jism' or 'body'
+   - NEVER use 'samay' -> use 'waqt' or 'time'
+   - NEVER use 'dard nivaarak' -> use 'painkillers'
+   - NEVER use 'swasthya' -> use 'sehat'
+   - NEVER use 'karya' -> use 'kaam'
+   - NEVER use 'bhavnaon' -> use 'ehsaas'
+   - NEVER use 'khojne' -> use 'dhoondne'
+   - NEVER use 'vishesh' -> use 'khaas'
+   - NEVER use 'vah' -> use 'woh'
+   - NEVER use 'ladaai' -> use 'larai'
+   - NEVER use 'badi' / 'bada' -> use 'bari' / 'bara'
+3. KEEP GAMING TERMS: Keep 'painkillers', 'ammo', 'guns', 'checkpoint', 'comfort zone', 'health', 'plan B' in English as used in normal Urdu conversation.
+4. FORMATTING TAGS: Keep all formatting tags (~z~, ~w~, ~n~, ~a~, ~g~, ~b~) EXACTLY as they are in the source text."""
+
+# 3. Fail-Safe Python Auto-Corrector
+HINDI_TO_URDU = {
+    r'\bsamay\b': 'waqt',
+    r'\bshareer\b': 'jism',
+    r'\bdard nivaarak\b': 'painkillers',
+    r'\bswasthya\b': 'sehat',
+    r'\bkarya\b': 'kaam',
+    r'\bbhavnaon\b': 'ehsaas',
+    r'\bkhojne\b': 'dhoondne',
+    r'\bvishesh\b': 'khaas',
+    r'\bvah\b': 'woh',
+    r'\bladaai li\b': 'larai hui',
+    r'\bladaai\b': 'larai',
+    r'\bbadi\b': 'bari',
+    r'\bbada\b': 'bara',
+}
+
+def clean_hindi_words(text):
+    if not isinstance(text, str):
+        return text
+    for pattern, replacement in HINDI_TO_URDU.items():
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+
+# 4. Gemini Translation Function
+def translate_batch(batch_dict):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={API_KEY}"
+    
+    prompt = f"Translate the following JSON values to natural Pakistani Roman Urdu. Return a JSON object with the same keys:\n{json.dumps(batch_dict, ensure_ascii=False)}"
+    
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": SYSTEM_PROMPT},
+                    {"text": prompt}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.2
+        }
+    }
+    
+    headers = {"Content-Type": "application/json"}
     
     for attempt in range(5):
         try:
-            client = get_gemini_client()
-            response = client.models.generate_content(
-                model='gemini-1.5-flash',
-                contents=prompt,
-            )
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
             
-            # Cleaning markdown remnants if leaked by AI
-            response_text = response.text.strip().replace("```text", "").replace("```", "")
-            translated_lines = [l.strip() for l in response_text.split('\n') if l.strip()]
-            
-            if len(translated_lines) == len(batch_texts):
-                final_batch = []
-                # Reconstruct key-prefix back to the translated dialogue string
-                for key_prefix, trans_text in zip(batch_keys, translated_lines):
-                    clean_trans = trans_text.strip('"').strip("'")
-                    final_batch.append(f"{key_prefix}{clean_trans}")
-                return final_batch
-            else:
-                print(f"\n⚠️ Batch {batch_num}: Lines count mismatch ({len(translated_lines)} vs {len(batch_texts)}). Retrying...", flush=True)
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "503" in error_str or "Quota" in error_str or "exhausted" in error_str.lower():
-                switch_key()
-            else:
-                time.sleep(4)
+            if response.status_code == 200:
+                res_data = response.json()
+                content = res_data['candidates'][0]['content']['parts'][0]['text']
                 
-    # Fallback to original reconstruction if all attempts exhaust
-    fallback_batch = []
-    for key_prefix, orig_text in zip(batch_keys, batch_texts):
-        fallback_batch.append(f"{key_prefix}{orig_text}")
-    return fallback_batch
-
-if os.path.exists(input_file):
-    with open(input_file, "r", encoding="utf-8") as f:
-        all_lines = f.readlines()
-        
-    final_lines = list(all_lines)
-    batch_keys = []
-    batch_texts = []
-    batch_indices = []
-    
-    for idx, line in enumerate(all_lines):
-        if "~z~" in line or "~w~" in line:
-            if not line.strip().startswith("//"):
-                # Splitting line properly keeping the structural key prefix intact
-                symbol = "~z~" if "~z~" in line else "~w~"
-                parts = line.split(symbol, 1)
-                if len(parts) > 1:
-                    batch_keys.append(parts[0] + symbol) # Holds: "0x1F943B91 = ~z~"
-                    batch_texts.append(parts[1].strip())  # Holds pure English text line
-                    batch_indices.append(idx)
-
-    total_batches = (len(batch_items := batch_texts) + batch_size - 1) // batch_size
-    print(f"📋 Total Dialogues Found: {len(batch_items)} lines ({total_batches} batches). Starting on GitHub Cloud...", flush=True)
-    
-    for i in range(0, len(batch_items), batch_size):
-        current_batch_num = (i // batch_size) + 1
-        
-        current_keys = batch_keys[i:i+batch_size]
-        current_texts = batch_texts[i:i+batch_size]
-        current_indices = batch_indices[i:i+batch_size]
-        
-        translated_batch = translate_batch_gemini(current_keys, current_texts, current_batch_num, total_batches)
-        
-        for b_idx, trans_line in zip(current_indices, translated_batch):
-            final_lines[b_idx] = trans_line + "\n"
+                try:
+                    parsed = json.loads(content.strip())
+                    if isinstance(parsed, dict) and parsed:
+                        cleaned_parsed = {k: clean_hindi_words(v) for k, v in parsed.items()}
+                        return cleaned_parsed
+                except json.JSONDecodeError:
+                    print(f"\n⚠️ Format Error. Retrying...", end="", flush=True)
+                    
+            elif response.status_code == 429:
+                print(f"\n⚠️ Rate Limit (Gemini API)! 10 seconds wait kar rahe hain...", end="", flush=True)
+                time.sleep(10)
+                continue
+            else:
+                print(f"\n⚠️ ERROR {response.status_code}: {response.text[:100]}", flush=True)
+                
+        except Exception as e:
+            print(f"\n⚠️ Connection Error: {str(e)[:50]}...", end="", flush=True)
             
-        print(f"➔ Processed Batch {current_batch_num} of {total_batches} successfully.", flush=True)
-        time.sleep(4.0)
+        time.sleep(5)
+        
+    print("\n❌ Errors limit reached.")
+    exit(1)
 
-    with open(output_file, "w", encoding="utf-8") as outfile:
-        outfile.writelines(final_lines)
-    print("\n🎉 SUCCESS: File writing complete.", flush=True)
+# 5. Main Processing Logic
+if os.path.exists(input_file):
+    print(f"📁 Reading file: {input_file}", flush=True)
+    
+    saved_data = {}
+    if os.path.exists(checkpoint_file):
+        with open(checkpoint_file, "r", encoding="utf-8") as f: 
+            try:
+                saved_data = json.load(f)
+                saved_data = {k: clean_hindi_words(v) for k, v in saved_data.items()}
+                print(f"🔄 Checkpoint Loaded: {len(saved_data)} lines pehle se completed hain.", flush=True)
+            except Exception:
+                saved_data = {}
+
+    with open(input_file, "r", encoding="utf-8", errors="ignore") as f: all_lines = f.readlines()
+    pending_batch = {}
+    total = 0
+
+    for line in all_lines:
+        if re.search(r'=\s*~(z|w)~', line):
+            total += 1
+            k = line.split('=', 1)[0].strip()
+            if k not in saved_data:
+                pending_batch[k] = line.split('=', 1)[1].strip()
+                
+            if len(pending_batch) >= batch_size:
+                print(f"\n🚀 Translating with Gemini... ({len(saved_data)}/{total})", flush=True)
+                res = translate_batch(pending_batch)
+                if res:
+                    saved_data.update(res)
+                    with open(checkpoint_file, "w", encoding="utf-8") as cf: 
+                        json.dump(saved_data, cf, ensure_ascii=False, indent=2)
+                    print("✅ [Batch Saved Successfully]", flush=True)
+                pending_batch = {}
+                # Safe Delay for Gemini Free Rate Limit (15 RPM)
+                time.sleep(4.5)
+
+    if pending_batch:
+        res = translate_batch(pending_batch)
+        if res:
+            saved_data.update(res)
+            with open(checkpoint_file, "w", encoding="utf-8") as cf: 
+                json.dump(saved_data, cf, ensure_ascii=False, indent=2)
+
+    print("\n🔨 Rebuilding american_roman.oxt file...", flush=True)
+    count = 0
+    with open(output_file, "w", encoding="utf-8") as out:
+        for line in all_lines:
+            if re.search(r'=\s*~(z|w)~', line):
+                k = line.split('=', 1)[0].strip()
+                if k in saved_data:
+                    clean_text = clean_hindi_words(saved_data[k])
+                    out.write(f"{k} = {clean_text}\n")
+                    count += 1
+                else: out.write(line)
+            else: out.write(line)
+            
+    print(f"\n🎉 BOOM! SUCCESS! {count} lines Perfect Gemini Roman Urdu mein convert ho gayin!", flush=True)
 else:
-    print(f"❌ Error: '{input_file}' not found in repository root directory.", flush=True)
+    print(f"❌ Error: '{input_file}' file nahi mili.", flush=True)
